@@ -1,0 +1,7 @@
+pdf2image
+poppler=0.65.0
+pypdf2
+pdftotext
+setuptools
+wheel
+spacy
