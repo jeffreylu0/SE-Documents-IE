@@ -77,7 +77,10 @@ class SectionExtraction:
         self.raw_text = pdftotext.PDF(f)
 
   def get_acronyms(self):
-
+    
+    if self.raw_text is None:
+      self.readPDF()
+      
     acronym_pattern = r'(?<=\()[ ]*[A-Z][A-Za-z]*[ ]*(?=\))'
     joined_text = ''.join(self.raw_text).replace('\n',' ')
     acronym_regex_list = re.findall(acronym_pattern,joined_text) #Extract all acronyms within parentheses from raw text
@@ -95,7 +98,7 @@ class SectionExtraction:
       uppercase_letters = [char for char in acr if char.isupper()]
       acr_pattern = []
       for letter in uppercase_letters:
-          acr_pattern.extend([{'_':{'first_letter':letter},'IS_TITLE':True},
+          acr_pattern.extend([{'_':{'first_letter':{'IN':[letter,letter.lower()]}}},
                               {'IS_ALPHA':True,'OP':'?'}])
 
       acr_pattern.extend([{'TEXT':'('}, {'TEXT':f'{acr}'}, {'TEXT':')'}])
