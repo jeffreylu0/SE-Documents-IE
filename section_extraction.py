@@ -2,29 +2,45 @@ from pdf2image import convert_from_path
 from PyPDF2 import PdfFileReader, PdfFileWriter
 from tesserocr import PyTessBaseAPI
 import pdftotext
+import spacy
+from spacy.matcher import Matcher
+from spacy.tokens import Token, Span
 import pandas as pd
 import os
 import re
 
+nlp = spacy.load('en_core_web_sm')
+
 class SectionExtraction:
 
   def __init__(self, path, page_range=[], need_OCR=False, remove_patterns=None, is_named=True):
+
     # Path of the PDF File
     self.path = path
+
     # Specified page numbers in page_range. Accounting for index starting at zero
     self.pages = [page_num-1 for page_num in list(range(page_range[0],page_range[1]+1))]
+
     # Whether the PDF is scanned and needs OCR 
     self.need_OCR = need_OCR
+
     # Regex patterns to remove from text i.e. common headers and footer
     self.remove_patterns = remove_patterns
+
     # Whether sections in the text are named
     self.is_named = is_named
+
     # PDF file subsetted by page_range. Used as input to OCR or PDF parser
     self.subset_pdf = None
+
     # Raw text returned from OCR or PDF parser. Will be transformed if preprocess() is called
     self.raw_text = None
+
     # Section titles include number and name e.g. 4.3.3 Auxillary Communication Payload
     self.titles = None
+
+    # Acronyms extracted from text. List of tuples (acronym, entity_name)
+    self.acronyms = None
 
   def fileSubset(self):
     """Write temporary pdf file based on specified page range to read for OCR or pdfToText.
@@ -58,13 +74,47 @@ class SectionExtraction:
     else:
       #Get text with PDF parser
       with open(self.subset_pdf, 'rb') as f:
-        self.raw_text = pdftotext.PDF(f)    
+        self.raw_text = pdftotext.PDF(f)
+
+  def get_acronyms(self):
+
+    acronym_pattern = r'(?<=\()[ ]*[A-Z][A-Za-z]*[ ]*(?=\))'
+    joined_text = ''.join(self.raw_text).replace('\n',' ')
+    acronym_regex_list = re.findall(acronym_pattern,joined_text) #Extract all acronyms within parentheses from raw text
+
+    #Extract entity names whose first capital letters of words align with the capital letters of the acronyms.
+    #Will miss acronyms that have more complex entity names.
+    matcher = Matcher(nlp.vocab)
+    first_letter = lambda token: token.text[0]
+    Token.set_extension('first_letter', getter=first_letter, force=True)
+
+    doc = nlp(joined_text)
+    all_patterns = []
+
+    for acr in acronym_regex_list:
+      uppercase_letters = [char for char in acr if char.isupper()]
+      acr_pattern = []
+      for letter in uppercase_letters:
+          acr_pattern.extend([{'_':{'first_letter':letter},'IS_TITLE':True},
+                              {'IS_ALPHA':True,'OP':'?'}])
+
+      acr_pattern.extend([{'TEXT':'('}, {'TEXT':f'{acr}'}, {'TEXT':')'}])
+      
+      all_patterns.append(acr_pattern)
+    
+    matcher.add('ALL ACRONYMS',all_patterns)
+
+    matches = matcher(doc)
+    acronym_spans = [Span(doc,start,end).text for match_id,start,end in matches]
+    acronyms = [re.search(r'(?<=\().*(?=\))',span).group() for span in set(acronym_spans)]
+    entity_names = [re.search(r'.*(?= \()',span).group() for span in set(acronym_spans)]
+
+    self.acronyms = list(zip(acronyms,entity_names))  
 
   def preprocess(self):
-    """ Remove headers, footers, and other patterns from the raw text. Specify list of regex patterns in remove_patterns.
-        Returns raw_text with all patterns removed. 
+    """ Remove specified regex patterns from text e.g. headers and footers. Save all acronyms and corresponding entities.
+        Remove all text within parentheses. 
     """
-
     if self.remove_patterns is not None:
       combined_pattern = r''
       for pattern in self.remove_patterns:
@@ -72,6 +122,8 @@ class SectionExtraction:
       self.raw_text = [re.sub(combined_pattern,'',string) for string in self.raw_text] #remove all specified regex patterns
 
     self.raw_text = [re.sub(r' {2,}',' ',string) for string in self.raw_text] #replace spaces 2 or bigger with a single space 
+    self.get_acronyms() #save acronyms
+    self.raw_text = [re.sub(r'\(.*?\)','',string,flags=re.DOTALL) for string in self.raw_text] #remove all text within parentheses
 
   def named_parent_mapping(self):
     """Return mapping of a parent section to a child section e.g. the name of 4.5 to the name of 4.5.1
@@ -96,7 +148,6 @@ class SectionExtraction:
 
     return parent_map
 
-
   def named_top_level_mapping(self):
     """Return mapping of the top level to a section e.g. the name of 4.5 to the name of 4.5.1.2
     """
@@ -118,22 +169,23 @@ class SectionExtraction:
     
     return top_level_map
 
+
   def named_sections(self):
 
-    title_match = r'\d\.[\d.]+.*' #match entire section title e.g. '4.3.3 Auxillary Communications Payload'
+    title_match = r'(?<=\n)\d\.[\d.]+.*' #match entire section title e.g. '4.3.3 Auxillary Communications Payload'
     number_match = r'\d\.[\d.]+'  #match section number only e.g. '4.3.3'
-    name_match = r'(?<=[\. ])(\D)+' #match section name only e.g. 'Auxillary Communications Payload'
+    name_match = r'(?<=\d ).*' #match section name only e.g. 'Auxillary Communications Payload'
 
     joined_text = ''.join(self.raw_text) #join all pages into single string
     self.titles = re.findall(title_match,joined_text) #get full titles e.g. '4.3.3 Auxillary Communications Payload'
     
-    section_numbers = [re.match(number_match,title).group() for title in self.titles] #get numbers e.g. '4.3.3'
-    section_names = [re.search(name_match,title).group() for title in self.titles if re.search(name_match,title) is not None] #get names e.g. 'Auxillary Communications Payload'
+    section_numbers = [re.match(number_match,title).group() for title in self.titles] #get numbers e.g. '4.3.3' from titles
+    section_names = [re.search(name_match,title).group() for title in self.titles if re.search(name_match,title) is not None] #get names e.g. 'Auxillary Communications Payload' from titles
     section_names = [name.strip() for name in section_names] #strip leading and trailing whitespace
 
     section_descriptions = re.split(title_match,joined_text) #split by section title
     section_descriptions = [description.replace('\n',' ') for description in section_descriptions] #replace line breaks with space
-    section_descriptions = [description for description in section_descriptions if re.fullmatch(r' {2,}',description) is None] #remove multiple line breaks (2 or more spaces)
+    section_descriptions = [description for description in section_descriptions if re.fullmatch(r' {2,}',description) is None] #remove multiple spaces
     section_descriptions = [description for description in section_descriptions if re.match(r'[ ]+\d+',description) is None] #handle main section titles e.g. '4 System and Interface Description' present when splitting by title match
 
     top_level_map = self.named_top_level_mapping()
@@ -156,5 +208,4 @@ class SectionExtraction:
     else:
       output_df = self.unnamed_sections()
       return output_df
-
 
