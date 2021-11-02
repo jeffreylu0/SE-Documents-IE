@@ -112,7 +112,7 @@ class SectionExtraction:
     acronyms = [re.search(r'(?<=\().*(?=\))',span).group() for span in set(acronym_spans)]
     entity_names = [re.search(r'.*(?= \()',span).group() for span in set(acronym_spans)]
 
-    self.acronyms = list(zip(acronyms,entity_names)
+    self.acronyms = list(zip(acronyms,entity_names))
 
   def preprocess(self):
     """ Remove specified regex patterns from text e.g. headers and footers. Save all acronyms and corresponding entities.
