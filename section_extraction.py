@@ -9,7 +9,7 @@ import pandas as pd
 import os
 import re
 
-nlp = spacy.load('en_core_web_sm')
+nlp = spacy.load('en_core_web_lg',exclude='lemmatizer')
 
 class SectionExtraction:
 
@@ -77,16 +77,17 @@ class SectionExtraction:
         self.raw_text = pdftotext.PDF(f)
 
   def get_acronyms(self):
-    
+
     if self.raw_text is None:
       self.readPDF()
-      
+
     acronym_pattern = r'(?<=\()[ ]*[A-Z][A-Za-z]*[ ]*(?=\))'
-    joined_text = ''.join(self.raw_text).replace('\n',' ')
+    joined_text = ''.join(self.raw_text).replace('\n',' ') #replace linebreaks with single spaces
+    joined_text = re.sub(r' {2,}',' ',joined_text) #replace multiple spaces with single space
     acronym_regex_list = re.findall(acronym_pattern,joined_text) #Extract all acronyms within parentheses from raw text
 
     #Extract entity names whose first capital letters of words align with the capital letters of the acronyms.
-    #Will miss acronyms that have more complex entity names.
+    #Will miss acronyms that have more complex entity names e.g. 'GOES-R Rebroadcast (GRB)'
     matcher = Matcher(nlp.vocab)
     first_letter = lambda token: token.text[0]
     Token.set_extension('first_letter', getter=first_letter, force=True)
@@ -99,10 +100,9 @@ class SectionExtraction:
       acr_pattern = []
       for letter in uppercase_letters:
           acr_pattern.extend([{'_':{'first_letter':{'IN':[letter,letter.lower()]}}},
-                              {'IS_ALPHA':True,'OP':'?'}])
+                              {'IS_ASCII':True,'OP':'?'}])
 
       acr_pattern.extend([{'TEXT':'('}, {'TEXT':f'{acr}'}, {'TEXT':')'}])
-      
       all_patterns.append(acr_pattern)
     
     matcher.add('ALL ACRONYMS',all_patterns)
@@ -112,7 +112,7 @@ class SectionExtraction:
     acronyms = [re.search(r'(?<=\().*(?=\))',span).group() for span in set(acronym_spans)]
     entity_names = [re.search(r'.*(?= \()',span).group() for span in set(acronym_spans)]
 
-    self.acronyms = list(zip(acronyms,entity_names))  
+    self.acronyms = list(zip(acronyms,entity_names)
 
   def preprocess(self):
     """ Remove specified regex patterns from text e.g. headers and footers. Save all acronyms and corresponding entities.
@@ -171,7 +171,6 @@ class SectionExtraction:
       top_level_map.extend([top_level_names[i]]*len(matching_sections))
     
     return top_level_map
-
 
   def named_sections(self):
 
